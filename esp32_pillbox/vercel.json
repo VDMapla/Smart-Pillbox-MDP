@@ -1,0 +1,11 @@
+{
+  "builds": [
+    {
+      "src": "react_dashboard/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "react_dashboard/dist"
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from './firebase';
-import { ref, onValue } from "firebase/database";
+import { ref, onValue, set } from "firebase/database";
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler
@@ -42,6 +42,8 @@ const generateMockData = () => {
 function App() {
   const [data, setData] = useState({ medicationLogs: {}, heartRate: {}, temperature: {}, alerts: {} });
   const [loading, setLoading] = useState(true);
+  const [alarmTime, setAlarmTime] = useState('');
+  const [isAlarmActive, setIsAlarmActive] = useState(false);
 
   useEffect(() => {
     if (DEMO_MODE) {
@@ -70,7 +72,11 @@ function App() {
       const userRef = ref(db, 'users/elderly_01');
       const unsubscribe = onValue(userRef, (snapshot) => {
         const val = snapshot.val();
-        if (val) setData(val);
+        if (val) {
+          setData(val);
+          if (val.alarmTime) setAlarmTime(val.alarmTime);
+          if (val.isAlarmActive !== undefined) setIsAlarmActive(val.isAlarmActive);
+        }
         setLoading(false);
       });
       return () => unsubscribe();
@@ -79,6 +85,40 @@ function App() {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const timeCheckInterval = setInterval(() => {
+      if (isAlarmActive && alarmTime) {
+        const now = new Date();
+        const currentHours = now.getHours().toString().padStart(2, '0');
+        const currentMinutes = now.getMinutes().toString().padStart(2, '0');
+        const currentTimeString = `${currentHours}:${currentMinutes}`;
+        
+        if (currentTimeString === alarmTime) {
+          alert(`🔔 MEDICATION TIME! It is ${currentTimeString}. Please take your medicine.`);
+          handleStopAlarm();
+        }
+      }
+    }, 1000 * 30); // Check every 30 seconds
+
+    return () => clearInterval(timeCheckInterval);
+  }, [isAlarmActive, alarmTime]);
+
+  const handleSetAlarm = () => {
+    if (!alarmTime) return;
+    setIsAlarmActive(true);
+    if (!DEMO_MODE) {
+      set(ref(db, 'users/elderly_01/alarmTime'), alarmTime);
+      set(ref(db, 'users/elderly_01/isAlarmActive'), true);
+    }
+  };
+
+  const handleStopAlarm = () => {
+    setIsAlarmActive(false);
+    if (!DEMO_MODE) {
+      set(ref(db, 'users/elderly_01/isAlarmActive'), false);
+    }
+  };
 
   if (loading) return <div className="loader"></div>;
 
@@ -132,6 +172,33 @@ function App() {
           <h2>💊 Medication Adherence</h2>
           <div className="stat-value">{adherence}%</div>
           <div className="stat-sub">{takenLogs} out of {totalLogs} tracked doses successfully taken</div>
+        </div>
+        <div className="card stat-card alarm-card">
+          <h2>⏰ Set Medication Alarm</h2>
+          <div className="alarm-controls" style={{marginTop: '15px', display: 'flex', gap: '10px', alignItems: 'center'}}>
+            <input 
+              type="time" 
+              value={alarmTime} 
+              onChange={(e) => setAlarmTime(e.target.value)} 
+              style={{padding: '8px', borderRadius: '5px', border: '1px solid #ccc', fontSize: '1rem'}}
+            />
+            <button 
+              onClick={handleSetAlarm}
+              style={{padding: '8px 15px', background: '#2ecc71', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold'}}
+            >
+              Set
+            </button>
+            <button 
+              onClick={handleStopAlarm}
+              disabled={!isAlarmActive}
+              style={{padding: '8px 15px', background: isAlarmActive ? '#e74c3c' : '#ccc', color: 'white', border: 'none', borderRadius: '5px', cursor: isAlarmActive ? 'pointer' : 'not-allowed', fontWeight: 'bold'}}
+            >
+              Stop
+            </button>
+          </div>
+          <div className="stat-sub" style={{marginTop: '10px'}}>
+            Status: {isAlarmActive ? <span style={{color: '#2ecc71', fontWeight: 'bold'}}>Active ({alarmTime})</span> : <span style={{color: '#7f8c8d'}}>Inactive</span>}
+          </div>
         </div>
         <div className="card stat-card">
           <h2>❤️ Latest Heart Rate</h2>

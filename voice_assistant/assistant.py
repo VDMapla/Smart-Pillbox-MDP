@@ -77,7 +77,20 @@ def handle_command(command):
         return True
 
     if "next dose" in command or "medicine time" in command or "next pill" in command:
-        speak("Your medicine doses are scheduled for 8 AM, 1 PM, and 8 PM daily.")
+        try:
+            alarm_ref = user_ref.child('alarmTime').get()
+            is_active_ref = user_ref.child('isAlarmActive').get()
+            if is_active_ref and alarm_ref:
+                hours, minutes = map(int, alarm_ref.split(':'))
+                period = "A M" if hours < 12 else "P M"
+                hr12 = hours if hours <= 12 else hours - 12
+                if hr12 == 0: hr12 = 12
+                min_str = f"{minutes:02d}" if minutes > 0 else "o'clock"
+                speak(f"Your next medicine dose is scheduled for {hr12} {min_str} {period}.")
+            else:
+                speak("You currently do not have a medicine alarm set.")
+        except Exception as e:
+            speak("I had trouble accessing your medication schedule.")
         
     elif "take my medicine" in command or "taken my medicine" in command or "take my pill" in command or "did i take" in command:
         try:

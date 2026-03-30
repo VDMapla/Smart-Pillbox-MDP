@@ -4,6 +4,7 @@ import firebase_admin
 from firebase_admin import credentials, db
 import sys
 import time
+from datetime import datetime
 
 # Initialize Firebase Connection
 try:
@@ -78,17 +79,35 @@ def handle_command(command):
 
     if "next dose" in command or "medicine time" in command or "next pill" in command:
         try:
-            alarm_ref = user_ref.child('alarmTime').get()
-            is_active_ref = user_ref.child('isAlarmActive').get()
-            if is_active_ref and alarm_ref:
-                hours, minutes = map(int, alarm_ref.split(':'))
-                period = "A M" if hours < 12 else "P M"
-                hr12 = hours if hours <= 12 else hours - 12
-                if hr12 == 0: hr12 = 12
-                min_str = f"{minutes:02d}" if minutes > 0 else "o'clock"
-                speak(f"Your next medicine dose is scheduled for {hr12} {min_str} {period}.")
+            alarms_ref = user_ref.child('alarms').get()
+            if alarms_ref:
+                now = datetime.now()
+                current_time = now.hour * 60 + now.minute
+                upcoming_alarms = []
+                
+                for period_name, data in alarms_ref.items():
+                    if data.get('active'):
+                        time_str = data.get('time', '')
+                        if time_str:
+                            h, m = map(int, time_str.split(':'))
+                            alarm_mins = h * 60 + m
+                            diff = alarm_mins - current_time
+                            if diff < 0:
+                                diff += 24 * 60 # Next day
+                            upcoming_alarms.append((diff, h, m, period_name))
+                
+                if upcoming_alarms:
+                    upcoming_alarms.sort(key=lambda x: x[0])
+                    _, h, m, period_name = upcoming_alarms[0]
+                    period_str = "A M" if h < 12 else "P M"
+                    hr12 = h if h <= 12 else h - 12
+                    if hr12 == 0: hr12 = 12
+                    min_str = f"{m:02d}" if m > 0 else "o'clock"
+                    speak(f"Your next medicine is your {period_name} dose, scheduled for {hr12} {min_str} {period_str}.")
+                else:
+                    speak("You currently do not have any active medicine alarms set.")
             else:
-                speak("You currently do not have a medicine alarm set.")
+                speak("You currently do not have any medicine alarms set.")
         except Exception as e:
             speak("I had trouble accessing your medication schedule.")
         

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from './firebase';
-import { ref, onValue, set } from "firebase/database";
+import { ref, onValue, set, push, remove } from "firebase/database";
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler
@@ -11,8 +11,6 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, T
 // ==========================================
 // 🧪 DEMO MODE TOGGLE
 // ==========================================
-// I have set this to true so you can see the UI IMMEDIATELY without hardware or Firebase!
-// Change this to 'false' later when you literally plug in the ESP32.
 const DEMO_MODE = true; 
 
 const generateMockData = () => {
@@ -29,28 +27,55 @@ const generateMockData = () => {
       log1: { status: "Taken", timestamp: new Date(now - 86400000).toISOString() },
       log2: { status: "Missed", timestamp: new Date(now - 43200000).toISOString() },
       log3: { status: "Taken", timestamp: new Date(now - 3600000).toISOString() },
+      log4: { status: "Taken", timestamp: new Date(now - 1200000).toISOString() },
     },
     heartRate: hr,
     temperature: temp,
     alerts: {
       a1: { message: "Missed morning medication.", type: "Medication", timestamp: new Date(now - 43200000).toISOString() },
       a2: { message: "High Heart Rate Detected (115 BPM)", type: "Vitals_Abnormal", timestamp: new Date(now - 86400000 * 2).toISOString() }
+    },
+    alarms: {
+      morning: { time: '08:00', active: true },
+      evening: { time: '14:00', active: false },
+      night: { time: '20:00', active: true }
+    },
+    medicines: {
+      m1: { name: 'Aspirin', dosage: '100mg', frequency: 'Morning' },
+      m2: { name: 'Metformin', dosage: '500mg', frequency: 'Evening' },
+      m3: { name: 'Atorvastatin', dosage: '20mg', frequency: 'Night' }
     }
   };
 };
 
 function App() {
-  const [data, setData] = useState({ medicationLogs: {}, heartRate: {}, temperature: {}, alerts: {} });
+  const [data, setData] = useState({ 
+    medicationLogs: {}, heartRate: {}, temperature: {}, alerts: {}, 
+    alarms: { morning: {time:'', active:false}, evening: {time:'', active:false}, night: {time:'', active:false} }, 
+    medicines: {} 
+  });
   const [loading, setLoading] = useState(true);
-  const [alarmTime, setAlarmTime] = useState('');
-  const [isAlarmActive, setIsAlarmActive] = useState(false);
+  
+  // Local active state for 3 alarms to handle user inputs
+  const [localAlarms, setLocalAlarms] = useState({
+     morning: { time: '', active: false },
+     evening: { time: '', active: false },
+     night: { time: '', active: false }
+  });
+
+  // Local state for new medicine form
+  const [newMedName, setNewMedName] = useState('');
+  const [newMedDosage, setNewMedDosage] = useState('');
+  const [newMedFreq, setNewMedFreq] = useState('Morning');
 
   useEffect(() => {
     if (DEMO_MODE) {
       setTimeout(() => {
-        setData(generateMockData());
+        const mock = generateMockData();
+        setData(mock);
+        if (mock.alarms) setLocalAlarms(mock.alarms);
         setLoading(false);
-      }, 500); // UI Loading simulation
+      }, 500);
       
       const interval = setInterval(() => {
          setData(prev => {
@@ -62,20 +87,17 @@ function App() {
             newData.temperature[newTempKey] = { value: (Math.random() * (37.2 - 36.1) + 36.1).toFixed(1), timestamp: now };
             return newData;
          });
-      }, 3000); // add new simulated live data point every 3 seconds
-      
+      }, 3000);
       return () => clearInterval(interval);
     }
 
-    // REAL HARDWARE LOGIC
     try {
       const userRef = ref(db, 'users/elderly_01');
       const unsubscribe = onValue(userRef, (snapshot) => {
         const val = snapshot.val();
         if (val) {
           setData(val);
-          if (val.alarmTime) setAlarmTime(val.alarmTime);
-          if (val.isAlarmActive !== undefined) setIsAlarmActive(val.isAlarmActive);
+          if (val.alarms) setLocalAlarms(val.alarms);
         }
         setLoading(false);
       });
@@ -86,41 +108,77 @@ function App() {
     }
   }, []);
 
+  // Time Monitor
   useEffect(() => {
     const timeCheckInterval = setInterval(() => {
-      if (isAlarmActive && alarmTime) {
-        const now = new Date();
-        const currentHours = now.getHours().toString().padStart(2, '0');
-        const currentMinutes = now.getMinutes().toString().padStart(2, '0');
-        const currentTimeString = `${currentHours}:${currentMinutes}`;
-        
-        if (currentTimeString === alarmTime) {
-          alert(`🔔 MEDICATION TIME! It is ${currentTimeString}. Please take your medicine.`);
-          handleStopAlarm();
+      const now = new Date();
+      const currentHours = now.getHours().toString().padStart(2, '0');
+      const currentMinutes = now.getMinutes().toString().padStart(2, '0');
+      const currentTimeString = `${currentHours}:${currentMinutes}`;
+      
+      const periods = ['morning', 'evening', 'night'];
+      periods.forEach(p => {
+        if (localAlarms[p]?.active && localAlarms[p]?.time === currentTimeString) {
+          alert(`🔔 MEDICATION TIME! It is ${currentTimeString} (${p} dose). Please take your medicine.`);
+          handleToggleAlarm(p, false); // Turn off after ringing to prevent spam
         }
-      }
+      });
     }, 1000 * 30); // Check every 30 seconds
 
     return () => clearInterval(timeCheckInterval);
-  }, [isAlarmActive, alarmTime]);
+  }, [localAlarms]);
 
-  const handleSetAlarm = () => {
-    if (!alarmTime) return;
-    setIsAlarmActive(true);
+  const handleTimeChange = (period, value) => {
+    setLocalAlarms(prev => ({ ...prev, [period]: { ...prev[period], time: value } }));
+  };
+
+  const handleToggleAlarm = (period, forceState = null) => {
+    const newState = forceState !== null ? forceState : !localAlarms[period].active;
+    const updatedAlarms = { ...localAlarms, [period]: { ...localAlarms[period], active: newState } };
+    setLocalAlarms(updatedAlarms);
+    
     if (!DEMO_MODE) {
-      set(ref(db, 'users/elderly_01/alarmTime'), alarmTime);
-      set(ref(db, 'users/elderly_01/isAlarmActive'), true);
+      set(ref(db, `users/elderly_01/alarms/${period}`), updatedAlarms[period]);
+    } else {
+        // Sync local demo state
+        setData(prev => ({ ...prev, alarms: updatedAlarms }));
     }
   };
 
-  const handleStopAlarm = () => {
-    setIsAlarmActive(false);
+  const handleAddMedicine = (e) => {
+    e.preventDefault();
+    if (!newMedName || !newMedDosage) return;
+    
+    const newMed = { name: newMedName, dosage: newMedDosage, frequency: newMedFreq };
+    
     if (!DEMO_MODE) {
-      set(ref(db, 'users/elderly_01/isAlarmActive'), false);
+      const medsRef = ref(db, 'users/elderly_01/medicines');
+      push(medsRef, newMed);
+    } else {
+      setData(prev => ({
+        ...prev,
+        medicines: { ...prev.medicines, [`m_${Date.now()}`]: newMed }
+      }));
+    }
+    
+    setNewMedName('');
+    setNewMedDosage('');
+    setNewMedFreq('Morning');
+  };
+
+  const handleRemoveMedicine = (key) => {
+    if (!DEMO_MODE) {
+      remove(ref(db, `users/elderly_01/medicines/${key}`));
+    } else {
+      setData(prev => {
+        const newMeds = { ...prev.medicines };
+        delete newMeds[key];
+        return { ...prev, medicines: newMeds };
+      });
     }
   };
 
-  if (loading) return <div className="loader"></div>;
+  if (loading) return <div className="loader-container"><div className="loader"></div></div>;
 
   const logsArray = Object.values(data.medicationLogs || {});
   const totalLogs = logsArray.length;
@@ -134,12 +192,13 @@ function App() {
   const latestTemp = tempArray.length > 0 ? tempArray[tempArray.length - 1].value : "--";
 
   const alertsArray = Object.values(data.alerts || {}).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  const medicinesArray = Object.entries(data.medicines || {});
 
   const hrChartData = {
     labels: hrArray.slice(-15).map(hr => new Date(hr.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})),
     datasets: [{
       label: 'Heart Rate (BPM)', data: hrArray.slice(-15).map(hr => hr.value),
-      borderColor: '#e74c3c', backgroundColor: 'rgba(231, 76, 60, 0.2)', fill: true, tension: 0.4, pointBackgroundColor: '#e74c3c', borderWidth: 3
+      borderColor: '#ff4757', backgroundColor: 'rgba(255, 71, 87, 0.2)', fill: true, tension: 0.4, pointBackgroundColor: '#ff4757', borderWidth: 3
     }]
   };
 
@@ -147,98 +206,153 @@ function App() {
     labels: tempArray.slice(-15).map(t => new Date(t.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})),
     datasets: [{
       label: 'Temperature (°C)', data: tempArray.slice(-15).map(t => t.value),
-      borderColor: '#4a90e2', backgroundColor: 'rgba(74, 144, 226, 0.2)', fill: true, tension: 0.4, pointBackgroundColor: '#4a90e2', borderWidth: 3
+      borderColor: '#1e90ff', backgroundColor: 'rgba(30, 144, 255, 0.2)', fill: true, tension: 0.4, pointBackgroundColor: '#1e90ff', borderWidth: 3
     }]
   };
 
-  const chartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-    scales: { y: { ticks: { font: { size: 14 } } }, x: { ticks: { font: { size: 10 } }, grid: { display: false } } }
+  const chartOptions = { 
+    responsive: true, maintainAspectRatio: false, 
+    plugins: { legend: { display: false } },
+    scales: { 
+      y: { ticks: { color: '#bdc3c7' }, grid: { color: 'rgba(255,255,255,0.05)' } }, 
+      x: { ticks: { color: '#bdc3c7', font: { size: 10 } }, grid: { display: false } } 
+    }
   };
 
   return (
-    <div className="dashboard-container">
+    <div className="dashboard-layout">
       {DEMO_MODE && (
-        <div style={{ background: '#f39c12', color: '#fff', padding: '12px', borderRadius: '12px', marginBottom: '25px', textAlign: 'center', fontWeight: '600', boxShadow: '0 4px 15px rgba(243, 156, 18, 0.3)', border: '1px solid #e67e22', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+        <div className="demo-banner">
           🧪 DEMO MODE ACTIVE: Showing simulated patient data! Live charts are auto-updating.<br/>
-          <span style={{fontSize: '0.9rem', fontWeight: '400', opacity: 0.9}}>(Change 'DEMO_MODE=false' in App.jsx when you are ready to connect the hardware)</span>
+          <span>(Change 'DEMO_MODE=false' in App.jsx when you are ready to connect hardware)</span>
         </div>
       )}
-      <header className="header">
-        <h1>Caregiver Health Dashboard</h1>
-        <p>Real-time monitoring for the Smart Pillbox & Wearable Band System</p>
-      </header>
-      <div className="grid">
-        <div className="card stat-card">
-          <h2>💊 Medication Adherence</h2>
-          <div className="stat-value">{adherence}%</div>
-          <div className="stat-sub">{takenLogs} out of {totalLogs} tracked doses successfully taken</div>
+      
+      <aside className="sidebar">
+        <div className="logo">
+          <div className="logo-icon">💊</div>
+          <h2>VitalSync</h2>
         </div>
-        <div className="card stat-card alarm-card">
-          <h2>⏰ Set Medication Alarm</h2>
-          <div className="alarm-controls" style={{marginTop: '15px', display: 'flex', gap: '10px', alignItems: 'center'}}>
-            <input 
-              type="time" 
-              value={alarmTime} 
-              onChange={(e) => setAlarmTime(e.target.value)} 
-              style={{padding: '8px', borderRadius: '5px', border: '1px solid #ccc', fontSize: '1rem'}}
-            />
-            <button 
-              onClick={handleSetAlarm}
-              style={{padding: '8px 15px', background: '#2ecc71', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold'}}
-            >
-              Set
-            </button>
-            <button 
-              onClick={handleStopAlarm}
-              disabled={!isAlarmActive}
-              style={{padding: '8px 15px', background: isAlarmActive ? '#e74c3c' : '#ccc', color: 'white', border: 'none', borderRadius: '5px', cursor: isAlarmActive ? 'pointer' : 'not-allowed', fontWeight: 'bold'}}
-            >
-              Stop
-            </button>
-          </div>
-          <div className="stat-sub" style={{marginTop: '10px'}}>
-            Status: {isAlarmActive ? <span style={{color: '#2ecc71', fontWeight: 'bold'}}>Active ({alarmTime})</span> : <span style={{color: '#7f8c8d'}}>Inactive</span>}
-          </div>
+        
+        <div className="adherence-widget">
+           <h3>Adherence Score</h3>
+           <div className="progress-ring-container">
+             <svg className="progress-ring" viewBox="0 0 100 100">
+               <circle className="progress-ring-bg" cx="50" cy="50" r="45"></circle>
+               <circle className="progress-ring-fill" cx="50" cy="50" r="45" style={{ strokeDashoffset: 283 - (283 * adherence) / 100, stroke: adherence >= 80 ? '#2ed573' : adherence >= 50 ? '#ffa502' : '#ff4757' }}></circle>
+             </svg>
+             <div className="progress-text">
+               <span className="percent">{adherence}%</span>
+             </div>
+           </div>
+           <p className="adherence-sub">{takenLogs} of {totalLogs} doses taken</p>
         </div>
-        <div className="card stat-card">
-          <h2>❤️ Latest Heart Rate</h2>
-          <div className="stat-value">{latestHR} <span className="unit">BPM</span></div>
-          <div className="stat-sub">Normal Range: 60 - 100 BPM</div>
-        </div>
-        <div className="card stat-card">
-          <h2>🌡️ Body Temperature</h2>
-          <div className="stat-value">{latestTemp} <span className="unit">°C</span></div>
-          <div className="stat-sub">Normal Range: 36.5 - 37.5 °C</div>
-        </div>
-      </div>
-      <div className="grid charts-grid">
-        <div className="card chart-container">
-          <h2 className="chart-title">Heart Rate History (Live)</h2>
-          <div className="chart-wrapper"><Line data={hrChartData} options={chartOptions} /></div>
-        </div>
-        <div className="card chart-container">
-          <h2 className="chart-title">Temperature History (Live)</h2>
-          <div className="chart-wrapper"><Line data={tempChartData} options={chartOptions} /></div>
-        </div>
-      </div>
-      <div className="card alerts-container">
-        <h2>⚠️ Recent Alert Notifications</h2>
-        {alertsArray.length === 0 ? (
-          <p style={{marginTop: '10px', fontSize: '1.2rem', color: '#7f8c8d'}}>No alerts recorded in the system.</p>
-        ) : (
-          <ul className="alert-list">
-            {alertsArray.slice(0, 10).map((alert, index) => (
-              <li key={index} className={`alert-item ${alert.type === 'Medication' ? 'medication' : 'vitals'}`}>
-                <div className="alert-content">
-                  <span className="alert-text">{alert.message}</span>
-                  <span className="alert-type"> | Alert Type: {alert.type}</span>
+
+        <div className="medicine-history">
+          <h3>Current Medicines</h3>
+          <form onSubmit={handleAddMedicine} className="add-med-form">
+            <input type="text" placeholder="Medicine Name" value={newMedName} onChange={e=>setNewMedName(e.target.value)} required/>
+            <div className="med-row">
+              <input type="text" placeholder="Dosage (e.g. 100mg)" value={newMedDosage} onChange={e=>setNewMedDosage(e.target.value)} required/>
+              <select value={newMedFreq} onChange={e=>setNewMedFreq(e.target.value)}>
+                <option value="Morning">Morning</option>
+                <option value="Evening">Evening</option>
+                <option value="Night">Night</option>
+              </select>
+            </div>
+            <button type="submit" className="add-btn">+ Add Med</button>
+          </form>
+          
+          <ul className="med-list">
+            {medicinesArray.length === 0 ? <li className="empty-meds">No medicines added yet.</li> : medicinesArray.map(([key, med]) => (
+              <li key={key} className="med-item">
+                <div className="med-info">
+                  <span className="med-name">{med.name}</span>
+                  <span className="med-details">{med.dosage} • {med.frequency}</span>
                 </div>
-                <div className="alert-time">{new Date(alert.timestamp).toLocaleString()}</div>
+                <button onClick={() => handleRemoveMedicine(key)} className="del-btn">✕</button>
               </li>
             ))}
           </ul>
-        )}
-      </div>
+        </div>
+      </aside>
+
+      <main className="main-content">
+        <header className="header">
+          <div>
+            <h1>Patient Dashboard</h1>
+            <p>Real-time vitals and smart pillbox monitor</p>
+          </div>
+          <div className="user-profile">
+            <div className="avatar">E01</div>
+            <span>Elderly_01</span>
+          </div>
+        </header>
+        
+        <div className="top-cards">
+          <div className="glass-card stat-card vitals-hr">
+            <div className="stat-icon">❤️</div>
+            <div className="stat-info">
+              <h3>Heart Rate</h3>
+              <div className="stat-val">{latestHR} <span>BPM</span></div>
+              <p>Normal Range: 60 - 100</p>
+            </div>
+          </div>
+          <div className="glass-card stat-card vitals-temp">
+            <div className="stat-icon">🌡️</div>
+            <div className="stat-info">
+              <h3>Temperature</h3>
+              <div className="stat-val">{latestTemp} <span>°C</span></div>
+              <p>Normal Range: 36.5 - 37.5</p>
+            </div>
+          </div>
+
+          <div className="glass-card alarms-card">
+            <h3>⏰ Medication Alarms</h3>
+            <div className="alarms-grid">
+              {['morning', 'evening', 'night'].map(period => (
+                <div key={period} className={`alarm-row ${localAlarms[period]?.active ? 'active' : ''}`}>
+                  <span className="period-label">{period.charAt(0).toUpperCase() + period.slice(1)}</span>
+                  <input type="time" value={localAlarms[period]?.time || ''} onChange={(e) => handleTimeChange(period, e.target.value)} />
+                  <button onClick={() => handleToggleAlarm(period)} className={`toggle-btn ${localAlarms[period]?.active ? 'on' : 'off'}`}>
+                    {localAlarms[period]?.active ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="charts-grid">
+          <div className="glass-card chart-container">
+            <h3>Heart Rate Trends</h3>
+            <div className="chart-wrapper"><Line data={hrChartData} options={chartOptions} /></div>
+          </div>
+          <div className="glass-card chart-container">
+            <h3>Temperature Trends</h3>
+            <div className="chart-wrapper"><Line data={tempChartData} options={chartOptions} /></div>
+          </div>
+        </div>
+
+        <div className="glass-card alerts-container">
+          <h3>⚠️ Recent Notifications & Alerts</h3>
+          {alertsArray.length === 0 ? (
+            <p className="empty-alerts">System is clear. No recent alerts.</p>
+          ) : (
+            <ul className="alert-list">
+              {alertsArray.slice(0, 5).map((alert, idx) => (
+                <li key={idx} className={`alert-item ${alert.type === 'Medication' ? 'medication' : 'vitals'}`}>
+                  <div className="alert-icon">{alert.type === 'Medication' ? '💊' : '🚨'}</div>
+                  <div className="alert-content">
+                    <span className="alert-text">{alert.message}</span>
+                    <span className="alert-time">{new Date(alert.timestamp).toLocaleString()}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </main>
     </div>
   );
 }
